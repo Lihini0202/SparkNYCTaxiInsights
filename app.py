@@ -8,8 +8,18 @@ import os
 import shutil
 import zipfile
 
-# Initialize Spark session
-spark = SparkSession.builder.appName("NYCTaxiAnalysis").getOrCreate()
+# Initialize Spark session with minimal resources
+try:
+    spark = (SparkSession.builder
+             .appName("NYCTaxiAnalysis")
+             .config("spark.driver.memory", "512m")
+             .config("spark.executor.memory", "512m")
+             .config("spark.executor.cores", "1")
+             .config("spark.cores.max", "1")
+             .getOrCreate())
+except Exception as e:
+    st.error(f"Failed to initialize Spark session: {e}")
+    st.stop()
 
 # Streamlit app title
 st.title("NYC Taxi Trip Analytics Dashboard")
