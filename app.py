@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import pickle
 import os
+import urllib.request
 
 # Streamlit app title
 st.title("NYC Taxi Trip Analytics Dashboard")
@@ -11,13 +12,24 @@ st.title("NYC Taxi Trip Analytics Dashboard")
 st.sidebar.header("Navigation")
 page = st.sidebar.selectbox("Choose a page", ["Trip Trends", "Demand Predictions"])
 
-# Load preprocessed data and model
+# Load or generate data
 @st.cache_data
 def load_data_and_model():
     data_path = "agg_data.parquet"
     if not os.path.exists(data_path):
-        st.error("Aggregated data not found. Ensure agg_data.parquet is present.")
-        return None, None
+        try:
+            url = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-01.parquet"
+            urllib.request.urlretrieve(url, "temp.parquet")
+            df = pd.read_parquet("temp.parquet")
+            df = df.sample(frac=0.01, random_state=42)  # Smaller sample to reduce memory
+            df = df[df['PULocationID'].notnull() & (df['fare_amount'] > 0)]
+            df['hour'] = pd.to_datetime(df['tpep_pickup_datetime']).dt.hour
+            agg_df = df.groupby(['PULocationID', 'hour']).size().reset_index(name='trip_count')
+            agg_df.to_parquet(data_path)
+            os.remove("temp.parquet")
+        except Exception as e:
+            st.error(f"Error downloading or processing data: {e}")
+            return None, None
     
     try:
         result_df = pd.read_parquet(data_path)
