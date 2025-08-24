@@ -5,6 +5,8 @@ from pyspark.sql import SparkSession
 from pyspark.ml.classification import RandomForestClassificationModel
 from pyspark.ml.feature import VectorAssembler
 import os
+import shutil
+import zipfile
 
 # Initialize Spark session
 spark = SparkSession.builder.appName("NYCTaxiAnalysis").getOrCreate()
@@ -16,12 +18,24 @@ st.title("NYC Taxi Trip Analytics Dashboard")
 st.sidebar.header("Navigation")
 page = st.sidebar.selectbox("Choose a page", ["Trip Trends", "Demand Predictions"])
 
+# Unzip directories
+def unzip_file(zip_path, extract_path):
+    if os.path.exists(zip_path):
+        if os.path.exists(extract_path):
+            shutil.rmtree(extract_path)
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_path)
+
+unzip_file("rf_model.zip", "rf_model")
+unzip_file("assembler.zip", "assembler")
+unzip_file("agg_data.zip", "agg_data")
+
 # Load preprocessed data and model
 @st.cache_resource
 def load_data_and_model():
     data_path = "agg_data"
     if not os.path.exists(data_path):
-        st.error("Aggregated data not found. Please run train_model.py first.")
+        st.error("Aggregated data not found. Ensure agg_data.zip is present and valid.")
         return None, None, None
     
     try:
@@ -34,7 +48,7 @@ def load_data_and_model():
     model_path = "rf_model"
     assembler_path = "assembler"
     if not os.path.exists(model_path) or not os.path.exists(assembler_path):
-        st.error("Model or assembler not found. Please run train_model.py first.")
+        st.error("Model or assembler not found. Ensure rf_model.zip and assembler.zip are present.")
         return result_df, None, None
     
     try:
