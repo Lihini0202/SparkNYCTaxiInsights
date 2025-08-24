@@ -1,25 +1,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from pyspark.sql import SparkSession
-from pyspark.ml.classification import RandomForestClassificationModel
-from pyspark.ml.feature import VectorAssembler
+import pickle
 import os
-import shutil
-import zipfile
-
-# Initialize Spark session with minimal resources
-try:
-    spark = (SparkSession.builder
-             .appName("NYCTaxiAnalysis")
-             .config("spark.driver.memory", "512m")
-             .config("spark.executor.memory", "512m")
-             .config("spark.executor.cores", "1")
-             .config("spark.cores.max", "1")
-             .getOrCreate())
-except Exception as e:
-    st.error(f"Failed to initialize Spark session: {e}")
-    st.stop()
 
 # Streamlit app title
 st.title("NYC Taxi Trip Analytics Dashboard")
@@ -28,53 +11,39 @@ st.title("NYC Taxi Trip Analytics Dashboard")
 st.sidebar.header("Navigation")
 page = st.sidebar.selectbox("Choose a page", ["Trip Trends", "Demand Predictions"])
 
-# Unzip directories
-def unzip_file(zip_path, extract_path):
-    if os.path.exists(zip_path):
-        if os.path.exists(extract_path):
-            shutil.rmtree(extract_path)
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_path)
-
-unzip_file("rf_model.zip", "rf_model")
-unzip_file("assembler.zip", "assembler")
-unzip_file("agg_data.zip", "agg_data")
-
 # Load preprocessed data and model
-@st.cache_resource
+@st.cache_data
 def load_data_and_model():
-    data_path = "agg_data"
+    data_path = "agg_data.parquet"
     if not os.path.exists(data_path):
-        st.error("Aggregated data not found. Ensure agg_data.zip is present and valid.")
-        return None, None, None
+        st.error("Aggregated data not found. Ensure agg_data.parquet is present.")
+        return None, None
     
     try:
-        agg_df = spark.read.parquet(data_path)
-        result_df = agg_df.toPandas()
+        result_df = pd.read_parquet(data_path)
     except Exception as e:
         st.error(f"Error loading data: {e}")
-        return None, None, None
+        return None, None
     
-    model_path = "rf_model"
-    assembler_path = "assembler"
-    if not os.path.exists(model_path) or not os.path.exists(assembler_path):
-        st.error("Model or assembler not found. Ensure rf_model.zip and assembler.zip are present.")
-        return result_df, None, None
+    model_path = "model.pkl"
+    if not os.path.exists(model_path):
+        st.error("Model not found. Ensure model.pkl is present.")
+        return result_df, None
     
     try:
-        model = RandomForestClassificationModel.load(model_path)
-        assembler = VectorAssembler.load(assembler_path)
+        with open(model_path, 'rb') as f:
+            model = pickle.load(f)
     except Exception as e:
-        st.error(f"Error loading model or assembler: {e}")
-        return result_df, None, None
+        st.error(f"Error loading model: {e}")
+        return result_df, None
     
-    return result_df, model, assembler
+    return result_df, model
 
 # Load data and model
-result_df, model, assembler = load_data_and_model()
+result_df, model = load_data_and_model()
 
 # Check if data/model loaded successfully
-if result_df is None or model is None or assembler is None:
+if result_df is None or model is None:
     st.stop()
 
 # Page: Trip Trends
@@ -106,12 +75,9 @@ elif page == "Demand Predictions":
     
     # Prepare input for prediction
     try:
-        input_data = spark.createDataFrame([(float(pulocation_id), hour_input)], ["PULocationID", "hour"])
-        input_transformed = assembler.transform(input_data)
-        
-        # Make prediction
-        prediction = model.transform(input_transformed).select("prediction").collect()[0][0]
-        prediction_label = "High-Demand" if prediction == 1.0 else "Low-Demand"
+        input_data = pd.DataFrame([[pulocation_id, hour_input]], columns=["PULocationID", "hour"])
+        prediction = model.predict(input_data)[0]
+        prediction_label = "High-Demand" if prediction == 1 else "Low-Demand"
         
         st.write(f"Prediction: **{prediction_label}**")
     except Exception as e:
@@ -119,12 +85,9 @@ elif page == "Demand Predictions":
     
     # Show feature importance
     st.subheader("Feature Importance")
-    importance = model.featureImportances.toArray()
+    importance = model.feature_importances
     features = ["PULocationID", "hour"]
     importance_df = pd.DataFrame({"Feature": features, "Importance": importance})
     
     fig = px.bar(importance_df, x="Feature", y="Importance", title="Feature Importance for Demand Prediction")
     st.plotly_chart(fig)
-
-# Stop Spark session
-spark.stop()
