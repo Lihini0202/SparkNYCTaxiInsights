@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, hour, count
-import urllib.request
+from pyspark.ml.classification import RandomForestClassificationModel
+from pyspark.ml.feature import VectorAssembler
 import os
 
 # Initialize Spark session
@@ -14,77 +14,92 @@ st.title("NYC Taxi Trip Analytics Dashboard")
 
 # Sidebar for navigation
 st.sidebar.header("Navigation")
-page = st.sidebar.selectbox("Choose a page", ["Pickup Heatmap", "Trip Trends"])
+page = st.sidebar.selectbox("Choose a page", ["Trip Trends", "Demand Predictions"])
 
-# Function to download dataset
-@st.cache_data
-def load_data():
-    url = "https://data.cityofnewyork.us/api/views/23ev-vb22/rows.csv?accessType=DOWNLOAD"
-    file_path = "nyc_taxi_2023.csv"
-    if not os.path.exists(file_path):
-        urllib.request.urlretrieve(url, file_path)
-    return file_path
-
-# Preprocess data with Spark
+# Load preprocessed data and model
 @st.cache_resource
-def preprocess_data():
-    file_path = load_data()
-    # Load CSV into Spark DataFrame
-    df = spark.read.csv(file_path, header=True, inferSchema=True)
+def load_data_and_model():
+    data_path = "agg_data"
+    if not os.path.exists(data_path):
+        st.error("Aggregated data not found. Please run train_model.py first.")
+        return None, None, None
     
-    # Clean data: Filter out invalid coordinates and fares
-    df = df.filter((col("pickup_latitude").isNotNull()) & 
-                   (col("pickup_longitude").isNotNull()) & 
-                   (col("fare_amount") > 0))
+    try:
+        agg_df = spark.read.parquet(data_path)
+        result_df = agg_df.toPandas()
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return None, None, None
     
-    # Aggregate by pickup location and hour
-    agg_df = df.groupBy(
-        col("pickup_longitude"),
-        col("pickup_latitude"),
-        hour(col("tpep_pickup_datetime")).alias("hour")
-    ).agg(count("*").alias("trip_count"))
+    model_path = "rf_model"
+    assembler_path = "assembler"
+    if not os.path.exists(model_path) or not os.path.exists(assembler_path):
+        st.error("Model or assembler not found. Please run train_model.py first.")
+        return result_df, None, None
     
-    # Convert to Pandas for Streamlit
-    result_df = agg_df.toPandas()
-    return result_df
+    try:
+        model = RandomForestClassificationModel.load(model_path)
+        assembler = VectorAssembler.load(assembler_path)
+    except Exception as e:
+        st.error(f"Error loading model or assembler: {e}")
+        return result_df, None, None
+    
+    return result_df, model, assembler
 
-# Load preprocessed data
-result_df = preprocess_data()
+# Load data and model
+result_df, model, assembler = load_data_and_model()
 
-# Page: Pickup Heatmap
-if page == "Pickup Heatmap":
-    st.header("Taxi Pickup Heatmap")
-    st.write("Visualize taxi pickup locations in NYC.")
-    
-    fig = px.density_mapbox(
-        result_df,
-        lat="pickup_latitude",
-        lon="pickup_longitude",
-        z="trip_count",
-        radius=10,
-        center={"lat": 40.7128, "lon": -74.0060},
-        zoom=10,
-        mapbox_style="open-street-map",
-        title="NYC Taxi Pickup Heatmap"
-    )
-    st.plotly_chart(fig)
+# Check if data/model loaded successfully
+if result_df is None or model is None or assembler is None:
+    st.stop()
 
 # Page: Trip Trends
-elif page == "Trip Trends":
+if page == "Trip Trends":
     st.header("Trip Count Trends by Hour")
-    st.write("Select an hour to view trip count trends.")
+    st.write("Select an hour to view trip count trends by taxi zone.")
     
     hours = sorted(result_df["hour"].unique())
     selected_hour = st.selectbox("Select Hour", hours)
     
     filtered_df = result_df[result_df["hour"] == selected_hour]
-    fig = px.scatter(
+    fig = px.bar(
         filtered_df,
-        x="pickup_longitude",
-        y="pickup_latitude",
-        size="trip_count",
+        x="PULocationID",
+        y="trip_count",
         title=f"Taxi Pickups at Hour {selected_hour}"
     )
+    st.plotly_chart(fig)
+
+# Page: Demand Predictions
+elif page == "Demand Predictions":
+    st.header("High-Demand Zone Predictions")
+    st.write("Predict whether a taxi zone is high-demand (trip count > 50) based on zone ID and hour.")
+    
+    # User input for prediction
+    st.subheader("Input Zone Details")
+    pulocation_id = st.number_input("Pickup Zone ID", value=236, min_value=1, max_value=263)  # NYC taxi zones: 1-263
+    hour_input = st.selectbox("Hour of Day", list(range(24)))
+    
+    # Prepare input for prediction
+    try:
+        input_data = spark.createDataFrame([(float(pulocation_id), hour_input)], ["PULocationID", "hour"])
+        input_transformed = assembler.transform(input_data)
+        
+        # Make prediction
+        prediction = model.transform(input_transformed).select("prediction").collect()[0][0]
+        prediction_label = "High-Demand" if prediction == 1.0 else "Low-Demand"
+        
+        st.write(f"Prediction: **{prediction_label}**")
+    except Exception as e:
+        st.error(f"Error making prediction: {e}")
+    
+    # Show feature importance
+    st.subheader("Feature Importance")
+    importance = model.featureImportances.toArray()
+    features = ["PULocationID", "hour"]
+    importance_df = pd.DataFrame({"Feature": features, "Importance": importance})
+    
+    fig = px.bar(importance_df, x="Feature", y="Importance", title="Feature Importance for Demand Prediction")
     st.plotly_chart(fig)
 
 # Stop Spark session
